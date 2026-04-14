@@ -1,0 +1,558 @@
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import * as recharts from "recharts";
+const { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis } = recharts;
+
+const APP_PW = (typeof import.meta !== "undefined" && import.meta.env?.VITE_APP_PASSWORD) || "lockintwin";
+
+// ─── DEFAULT GOALS ───
+const DEFAULT_GOALS = [
+  { id: "g1", name: "Pelvic Floor", cat: "Body", schedule: "daily", xp: 15 },
+  { id: "g2", name: "Workout", cat: "Body", schedule: "daily", xp: 25 },
+  { id: "g3", name: "8hr Sleep", cat: "Body", schedule: "daily", xp: 20 },
+  { id: "g4", name: "Eat Healthy", cat: "Body", schedule: "daily", xp: 20 },
+  { id: "g5", name: "Cleanser", cat: "Face", schedule: "daily", xp: 10 },
+  { id: "g6", name: "Moisturize", cat: "Face", schedule: "daily", xp: 10 },
+  { id: "g7", name: "Shave", cat: "Face", schedule: "weekly", days: [1, 3, 5], xp: 10 },
+  { id: "g8", name: "Jade Roll", cat: "Face", schedule: "weekly", days: [0, 2, 4, 6], xp: 10 },
+  { id: "g9", name: "Gua Sha", cat: "Face", schedule: "weekly", days: [0, 2, 4, 6], xp: 10 },
+  { id: "g10", name: "Meditate", cat: "Mind", schedule: "daily", xp: 20 },
+  { id: "g11", name: "No Phone on Toilet", cat: "Discipline", schedule: "daily", xp: 15 },
+  { id: "g12", name: "10min Walk No Screen", cat: "Discipline", schedule: "daily", xp: 15 },
+  { id: "g13", name: "No Fap", cat: "Discipline", schedule: "daily", xp: 25 },
+  { id: "g14", name: "No Reels", cat: "Discipline", schedule: "daily", xp: 20 },
+  { id: "g15", name: "6hr Pomodoros", cat: "Career", schedule: "daily", xp: 30 },
+  { id: "g16", name: "LinkedIn Post", cat: "Career", schedule: "weekly", days: [1, 2, 3, 4, 5], xp: 20 },
+  { id: "g17", name: "Max Out Connects", cat: "Career", schedule: "weekly", days: [1, 3, 5], xp: 25 },
+  { id: "g18", name: "Check Emails", cat: "Career", schedule: "daily", xp: 10 },
+];
+
+const CAT_COLORS = { Body: "#ef4444", Face: "#f59e0b", Mind: "#3b82f6", Discipline: "#a855f7", Career: "#22c55e" };
+const CATS_ORDER = ["Body", "Face", "Mind", "Discipline", "Career"];
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DAY_SHORT = ["S", "M", "T", "W", "T", "F", "S"];
+
+const LEVELS = [
+  { lv: 1, t: "NPC", c: "#555", stats: "Bench 135 · Squat 135 · Skinny fat", who: "95% of people who 'start Monday'" },
+  { lv: 3, t: "Awakened", c: "#888", stats: "Bench 155 · Squat 155 · 150lb", who: "You right now · gym beginners" },
+  { lv: 8, t: "Locked In", c: "#f59e0b", stats: "Bench 185 · Squat 225 · 160lb", who: "Top 20% college guys · D1 walk-ons" },
+  { lv: 15, t: "Sigma", c: "#3b82f6", stats: "Bench 225 · Squat 275 · 165lb lean", who: "Goggins at 19 · top consulting interns" },
+  { lv: 25, t: "Demon Mode", c: "#22c55e", stats: "Bench 275 · Squat 315+ · 175lb", who: "Pre-fame Hormozi · top 1% of class" },
+  { lv: 40, t: "Final Boss", c: "#f59e0b", stats: "Bench 315 · Squat 405 · 180 shredded", who: "Alex Hormozi · young Chamath" },
+  { lv: 60, t: "Ascended", c: "#ef4444", stats: "Bench 365+ · Squat 500+ · 185+ lean", who: "Prime Goggins · Jocko Willink" },
+];
+const getLevel = (lv) => { let r = LEVELS[0]; for (const l of LEVELS) if (lv >= l.lv) r = l; return r; };
+const XP_LV = 150;
+
+// ─── UTILS ───
+const dk = (d) => (d || new Date()).toISOString().slice(0, 10);
+const today = () => dk();
+const uid = () => "g" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+
+const sGet = async (k) => { try { if (window.storage?.get) { const r = await window.storage.get(k); return r?.value ? JSON.parse(r.value) : null; } return JSON.parse(localStorage.getItem(k)); } catch { return null; } };
+const sSet = async (k, v) => { try { const s = JSON.stringify(v); if (window.storage?.set) await window.storage.set(k, s); else localStorage.setItem(k, s); } catch {} };
+
+const SK = "lrpg6";
+const INIT = { completed: {}, streaks: {}, totalXP: 0, level: 1, heatmap: {}, goals: DEFAULT_GOALS };
+
+function isActiveOn(goal, dow) {
+  if (goal.schedule === "daily") return true;
+  return goal.days?.includes(dow) ?? false;
+}
+function goalsForDay(goals, dateObj) {
+  const dow = dateObj.getDay();
+  return goals.filter(g => isActiveOn(g, dow));
+}
+
+// ─── LOCK ───
+function Lock({ onUnlock }) {
+  const [pw, setPw] = useState(""); const [err, setErr] = useState(false);
+  useEffect(() => { try { if (localStorage.getItem("lrpg-auth") === "ok") onUnlock(); } catch {} }, []);
+  const go = () => { if (pw === APP_PW) { try { localStorage.setItem("lrpg-auth", "ok"); } catch {} onUnlock(); } else { setErr(true); setTimeout(() => setErr(false), 1500); } };
+  return (
+    <div style={{ fontFamily: "'DM Sans',sans-serif", background: "#0c0c10", height: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');*{box-sizing:border-box;margin:0;padding:0}input:focus{outline:none}`}</style>
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontSize: 28, marginBottom: 14 }}>⚡</div>
+        <div style={{ fontSize: 10, letterSpacing: 5, color: "#333", marginBottom: 4 }}>LIFE RPG</div>
+        <div style={{ fontSize: 20, fontWeight: 700, color: "#fff", marginBottom: 24 }}>Praj Kesireddy</div>
+        <input type="password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === "Enter" && go()} placeholder="password" autoFocus
+          style={{ width: 200, padding: "9px 14px", background: "rgba(255,255,255,0.04)", border: `1px solid ${err ? "#ef4444" : "#222"}`, borderRadius: 8, color: "#fff", fontSize: 13, fontFamily: "'DM Mono',monospace", textAlign: "center", letterSpacing: 2 }} />
+        <div style={{ marginTop: 10 }}><button onClick={go} style={{ padding: "7px 32px", background: "#fff", border: "none", borderRadius: 7, color: "#000", fontWeight: 600, fontSize: 11, cursor: "pointer" }}>Enter</button></div>
+        {err && <div style={{ color: "#ef4444", fontSize: 10, marginTop: 6 }}>wrong password</div>}
+      </div>
+    </div>
+  );
+}
+
+// ─── GOAL EDITOR MODAL ───
+function GoalEditor({ goals, onSave, onClose }) {
+  const [g, setG] = useState(JSON.parse(JSON.stringify(goals)));
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newCat, setNewCat] = useState("Body");
+  const [newSched, setNewSched] = useState("daily");
+  const [newDays, setNewDays] = useState([1, 2, 3, 4, 5]);
+
+  const remove = (id) => setG(g.filter(x => x.id !== id));
+  const add = () => {
+    if (!newName.trim()) return;
+    const goal = { id: uid(), name: newName.trim(), cat: newCat, schedule: newSched, xp: 15 };
+    if (newSched === "weekly") goal.days = [...newDays];
+    setG([...g, goal]);
+    setNewName(""); setAdding(false);
+  };
+
+  const cats = {};
+  for (const x of g) { if (!cats[x.cat]) cats[x.cat] = []; cats[x.cat].push(x); }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,.88)", zIndex: 200 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#141418", border: "1px solid #222", borderRadius: 12, maxWidth: 480, width: "92%", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ padding: "16px 20px 12px", borderBottom: "1px solid #1a1a1e", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>⚙️ Manage Goals</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setAdding(!adding)} style={{ background: adding ? "#222" : "#22c55e", border: "none", borderRadius: 6, padding: "5px 14px", color: adding ? "#888" : "#000", fontWeight: 600, fontSize: 11, cursor: "pointer" }}>
+              {adding ? "Cancel" : "+ Add Goal"}
+            </button>
+          </div>
+        </div>
+
+        {adding && (
+          <div style={{ padding: "12px 20px", borderBottom: "1px solid #1a1a1e", background: "rgba(255,255,255,0.02)" }}>
+            <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Goal name" onKeyDown={e => e.key === "Enter" && add()}
+              style={{ width: "100%", padding: "8px 12px", background: "rgba(255,255,255,0.04)", border: "1px solid #222", borderRadius: 6, color: "#fff", fontSize: 12, fontFamily: "'DM Sans',sans-serif", marginBottom: 8 }} autoFocus />
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <select value={newCat} onChange={e => setNewCat(e.target.value)}
+                style={{ padding: "5px 8px", background: "#1a1a1e", border: "1px solid #222", borderRadius: 5, color: "#ccc", fontSize: 11 }}>
+                {CATS_ORDER.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <select value={newSched} onChange={e => setNewSched(e.target.value)}
+                style={{ padding: "5px 8px", background: "#1a1a1e", border: "1px solid #222", borderRadius: 5, color: "#ccc", fontSize: 11 }}>
+                <option value="daily">Every day</option>
+                <option value="weekly">Specific days</option>
+              </select>
+              {newSched === "weekly" && (
+                <div style={{ display: "flex", gap: 3 }}>
+                  {DAY_SHORT.map((d, i) => (
+                    <div key={i} onClick={() => setNewDays(newDays.includes(i) ? newDays.filter(x => x !== i) : [...newDays, i].sort())}
+                      style={{ width: 22, height: 22, borderRadius: 4, background: newDays.includes(i) ? "#22c55e" : "#1a1a1e", border: "1px solid #222", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 600, color: newDays.includes(i) ? "#000" : "#555", cursor: "pointer" }}>
+                      {d}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button onClick={add} style={{ padding: "5px 16px", background: "#22c55e", border: "none", borderRadius: 5, color: "#000", fontWeight: 600, fontSize: 11, cursor: "pointer" }}>Add</button>
+            </div>
+          </div>
+        )}
+
+        <div style={{ overflowY: "auto", padding: "8px 20px 16px", flex: 1 }}>
+          {CATS_ORDER.filter(c => cats[c]).map(cat => (
+            <div key={cat} style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 9, letterSpacing: 2, color: CAT_COLORS[cat], marginBottom: 4, fontWeight: 600 }}>{cat.toUpperCase()}</div>
+              {cats[cat].map(goal => (
+                <div key={goal.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
+                  <div style={{ width: 4, height: 16, borderRadius: 2, background: CAT_COLORS[goal.cat], flexShrink: 0 }} />
+                  <span style={{ flex: 1, fontSize: 12, color: "#ccc" }}>{goal.name}</span>
+                  <span style={{ fontSize: 9, color: "#555", fontFamily: "'DM Mono',monospace" }}>
+                    {goal.schedule === "daily" ? "daily" : goal.days?.map(d => DAY_SHORT[d]).join(" ")}
+                  </span>
+                  <button onClick={() => remove(goal.id)}
+                    style={{ background: "none", border: "1px solid #222", borderRadius: 4, padding: "2px 8px", color: "#555", fontSize: 10, cursor: "pointer" }}
+                    onMouseEnter={e => { e.target.style.borderColor = "#ef4444"; e.target.style.color = "#ef4444"; }}
+                    onMouseLeave={e => { e.target.style.borderColor = "#222"; e.target.style.color = "#555"; }}>
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        <div style={{ padding: "12px 20px", borderTop: "1px solid #1a1a1e", display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onClose} style={{ padding: "7px 20px", background: "none", border: "1px solid #222", borderRadius: 6, color: "#888", fontSize: 11, cursor: "pointer" }}>Cancel</button>
+          <button onClick={() => onSave(g)} style={{ padding: "7px 20px", background: "#fff", border: "none", borderRadius: 6, color: "#000", fontWeight: 600, fontSize: 11, cursor: "pointer" }}>Save Changes</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── MAIN ───
+function Main() {
+  const [s, setS] = useState(INIT);
+  const [modal, setModal] = useState(null); // "levels" | "email" | "goals"
+  const [lvUp, setLvUp] = useState(null);
+  const td = today();
+
+  useEffect(() => { (async () => {
+    const sv = await sGet(SK);
+    if (sv) {
+      if (!sv.goals) sv.goals = DEFAULT_GOALS;
+      if (sv.lastDay !== td) sv.combo = 0;
+      setS(sv);
+    }
+  })(); }, []);
+
+  const save = async (ns) => { await sSet(SK, { ...ns, lastDay: td }); };
+  const isDone = (id) => s.completed?.[td]?.[id] || false;
+  const goals = s.goals || DEFAULT_GOALS;
+  const todayGoals = useMemo(() => goalsForDay(goals, new Date()), [goals, td]);
+
+  // ─── TOGGLE ───
+  const toggle = useCallback((id) => {
+    const goal = goals.find(g => g.id === id);
+    if (!goal) return;
+    const ns = JSON.parse(JSON.stringify(s));
+    if (!ns.completed) ns.completed = {};
+    if (!ns.completed[td]) ns.completed[td] = {};
+    if (!ns.streaks) ns.streaks = {};
+
+    if (ns.completed[td][id]) {
+      delete ns.completed[td][id];
+      ns.totalXP = Math.max(0, (ns.totalXP || 0) - goal.xp);
+      ns.combo = Math.max(0, (ns.combo || 0) - 1);
+      if (ns.streaks[id]) ns.streaks[id].c = Math.max(0, (ns.streaks[id].c || 0) - 1);
+      if (ns.heatmap?.[td]) ns.heatmap[td] = Math.max(0, ns.heatmap[td] - 1);
+    } else {
+      ns.completed[td][id] = true;
+      const combo = (ns.combo || 0) + 1;
+      ns.totalXP = (ns.totalXP || 0) + Math.round(goal.xp * Math.min(1 + combo * 0.1, 2.5));
+      ns.combo = combo;
+      if (!ns.streaks[id]) ns.streaks[id] = { c: 0, b: 0 };
+
+      // Proper streak logic: check if yesterday was also completed
+      const yest = new Date(); yest.setDate(yest.getDate() - 1);
+      const yk = dk(yest);
+      const wasYesterday = ns.completed[yk]?.[id];
+      if (wasYesterday || ns.streaks[id].c === 0) {
+        ns.streaks[id].c += 1;
+      } else {
+        ns.streaks[id].c = 1; // reset streak
+      }
+      if (ns.streaks[id].c > ns.streaks[id].b) ns.streaks[id].b = ns.streaks[id].c;
+
+      if (!ns.heatmap) ns.heatmap = {};
+      ns.heatmap[td] = (ns.heatmap[td] || 0) + 1;
+
+      const nl = Math.floor(ns.totalXP / XP_LV) + 1;
+      if (nl > (ns.level || 1)) { setLvUp(nl); setTimeout(() => setLvUp(null), 2200); }
+    }
+    ns.level = Math.floor((ns.totalXP || 0) / XP_LV) + 1;
+    setS(ns); save(ns);
+  }, [s, td, goals]);
+
+  // ─── SAVE GOALS ───
+  const saveGoals = (newGoals) => {
+    const ns = { ...s, goals: newGoals };
+    setS(ns); save(ns); setModal(null);
+  };
+
+  // ─── COMPUTED ───
+  const doneCount = todayGoals.filter(q => isDone(q.id)).length;
+  const totalToday = todayGoals.length;
+  const pct = totalToday > 0 ? Math.round((doneCount / totalToday) * 100) : 0;
+  const xpIn = (s.totalXP || 0) % XP_LV;
+  const lv = getLevel(s.level || 1);
+  const dayName = new Date().toLocaleDateString("en-US", { weekday: "long" });
+  const dateStr = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+  // ─── ACCURACY CHART ───
+  const accData = useMemo(() => {
+    const bars = [];
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const key = dk(d);
+      const dayGoals = goalsForDay(goals, d);
+      const done = dayGoals.filter(q => s.completed?.[key]?.[q.id]).length;
+      const total = dayGoals.length;
+      const acc = total > 0 ? Math.round((done / total) * 100) : 0;
+      bars.push({ label: key === td ? "Today" : d.toLocaleDateString("en-US", { weekday: "narrow" }), acc, done, total, key });
+    }
+    return bars;
+  }, [s, td, goals]);
+
+  // ─── RADAR ───
+  const radarData = useMemo(() => {
+    return CATS_ORDER.filter(cat => todayGoals.some(g => g.cat === cat)).map(cat => {
+      const catGoals = todayGoals.filter(g => g.cat === cat);
+      const done = catGoals.filter(g => isDone(g.id)).length;
+      return { cat, value: catGoals.length > 0 ? Math.round((done / catGoals.length) * 100) : 0 };
+    });
+  }, [s, td, todayGoals]);
+
+  // ─── 7-DAY TABLE ───
+  const tableDays = useMemo(() => {
+    const days = [];
+    for (let i = 6; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); days.push({ key: dk(d), label: i === 0 ? "Today" : DAY_NAMES[d.getDay()], dow: d.getDay() }); }
+    return days;
+  }, [td]);
+
+  // ─── HEATMAP ───
+  const heat = useMemo(() => {
+    const h = [];
+    for (let i = 55; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); h.push({ k: dk(d), c: s.heatmap?.[dk(d)] || 0 }); }
+    return h;
+  }, [s]);
+  const hc = (n) => n === 0 ? "rgba(255,255,255,0.025)" : n <= 2 ? "#14401a" : n <= 5 ? "#1a6b26" : n <= 10 ? "#22a835" : "#22ff44";
+
+  // ─── STREAKS ───
+  const topStreaks = useMemo(() => {
+    return goals.filter(q => (s.streaks?.[q.id]?.b || 0) > 0).sort((a, b) => (s.streaks?.[b.id]?.b || 0) - (s.streaks?.[a.id]?.b || 0)).slice(0, 5);
+  }, [s, goals]);
+
+  // ─── GROUPED ───
+  const grouped = useMemo(() => {
+    const g = {};
+    for (const q of todayGoals) { if (!g[q.cat]) g[q.cat] = []; g[q.cat].push(q); }
+    return g;
+  }, [todayGoals]);
+
+  return (
+    <div style={{ fontFamily: "'DM Sans',sans-serif", background: "#0c0c10", color: "#d4d4d4", height: "100vh", overflow: "hidden", display: "grid", gridTemplateRows: "auto 1fr" }}>
+      <style>{`
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700&family=DM+Mono:wght@400;500&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes scaleIn{from{transform:scale(.5);opacity:0}to{transform:scale(1);opacity:1}}
+@keyframes slideUp{from{transform:translateY(4px);opacity:0}to{transform:translateY(0);opacity:1}}
+.qr{transition:background .1s;cursor:pointer;border-radius:5px;padding:4px 6px;margin-bottom:1px;display:flex;align-items:center;gap:7px}
+.qr:hover{background:rgba(255,255,255,0.03)}
+::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#222;border-radius:3px}::-webkit-scrollbar-track{background:transparent}
+.recharts-text{fill:#444!important;font-family:'DM Mono',monospace!important;font-size:9px!important}
+      `}</style>
+
+      {/* HEADER */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 18px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>⚡ Praj Kesireddy</span>
+          <div onClick={() => setModal("levels")} style={{ padding: "2px 9px", background: "rgba(255,255,255,0.03)", borderRadius: 4, fontSize: 10, color: lv.c, cursor: "pointer", fontWeight: 600 }}>
+            Lv {s.level || 1} · {lv.t}
+          </div>
+          <span style={{ fontSize: 11, color: "#333" }}>{dayName}, {dateStr}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: "#f59e0b", fontFamily: "'DM Mono',monospace" }}>{s.totalXP || 0} xp</span>
+          <div style={{ width: 48, height: 3, background: "#1a1a1e", borderRadius: 2, overflow: "hidden" }}>
+            <div style={{ width: `${(xpIn / XP_LV) * 100}%`, height: "100%", background: "#f59e0b", borderRadius: 2, transition: "width .3s" }} />
+          </div>
+          <span style={{ fontSize: 13, fontWeight: 700, fontFamily: "'DM Mono',monospace", color: pct === 100 ? "#22c55e" : pct >= 50 ? "#f59e0b" : "#666" }}>{pct}%</span>
+          <span style={{ fontSize: 10, color: "#333", fontFamily: "'DM Mono',monospace" }}>{doneCount}/{totalToday}</span>
+          <button onClick={() => setModal("goals")} style={hdrBtn} title="Manage goals">⚙️</button>
+          <button onClick={() => setModal("levels")} style={hdrBtn} title="Levels">🏆</button>
+          <button onClick={() => setModal("email")} style={hdrBtn} title="Email setup">📧</button>
+        </div>
+      </div>
+
+      {/* BODY */}
+      <div style={{ display: "grid", gridTemplateColumns: "250px 1fr 1fr", overflow: "hidden", minHeight: 0 }}>
+
+        {/* LEFT: CHECKLIST */}
+        <div style={{ borderRight: "1px solid rgba(255,255,255,0.04)", padding: "10px 12px", overflowY: "auto" }}>
+          <div style={{ fontSize: 9, letterSpacing: 2, color: "#333", marginBottom: 8, fontWeight: 600 }}>TODAY'S QUESTS</div>
+          {CATS_ORDER.filter(c => grouped[c]).map(cat => (
+            <div key={cat} style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 8, letterSpacing: 2, color: CAT_COLORS[cat], marginBottom: 3, fontWeight: 600, opacity: 0.7 }}>{cat.toUpperCase()}</div>
+              {grouped[cat].map((q, i) => {
+                const d = isDone(q.id);
+                const sk = s.streaks?.[q.id]?.c || 0;
+                return (
+                  <div key={q.id} className="qr" onClick={() => toggle(q.id)} style={{ opacity: d ? 0.4 : 1, animation: `slideUp .1s ease ${i * 20}ms both` }}>
+                    <div style={{ width: 14, height: 14, borderRadius: 3, border: `1.5px solid ${d ? CAT_COLORS[cat] : "#262626"}`, background: d ? CAT_COLORS[cat] : "transparent", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, color: "#000", fontWeight: 800, flexShrink: 0 }}>{d ? "✓" : ""}</div>
+                    <span style={{ fontSize: 11, color: d ? "#444" : "#bbb", textDecoration: d ? "line-through" : "none", flex: 1 }}>{q.name}</span>
+                    {sk > 1 && <span style={{ fontSize: 7, color: "#f97316", fontWeight: 600 }}>🔥{sk}</span>}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+          {totalToday === 0 && <div style={{ color: "#333", fontSize: 11, padding: 20, textAlign: "center" }}>No quests scheduled today. Hit ⚙️ to add goals.</div>}
+        </div>
+
+        {/* MID: CHARTS */}
+        <div style={{ borderRight: "1px solid rgba(255,255,255,0.04)", padding: "10px 14px", display: "flex", flexDirection: "column", gap: 8, minHeight: 0, overflow: "hidden" }}>
+          <div style={{ flex: "1 1 0", minHeight: 0 }}>
+            <div style={{ fontSize: 9, letterSpacing: 2, color: "#333", marginBottom: 4, fontWeight: 600 }}>14-DAY ACCURACY</div>
+            <div style={{ height: "calc(100% - 18px)" }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={accData} barCategoryGap="15%">
+                  <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "#333", fontSize: 9, fontFamily: "'DM Mono'" }} />
+                  <YAxis domain={[0, 100]} axisLine={false} tickLine={false} width={20} tick={{ fill: "#222", fontSize: 8 }} />
+                  <Tooltip content={({ active, payload }) => {
+                    if (!active || !payload?.[0]) return null;
+                    const d = payload[0].payload;
+                    return <div style={{ background: "#1a1a1e", border: "1px solid #262626", borderRadius: 6, padding: "6px 10px", fontSize: 10, color: "#ccc" }}>{d.done}/{d.total} · {d.acc}%</div>;
+                  }} />
+                  <Bar dataKey="acc" radius={[3, 3, 0, 0]} fill="#22c55e" fillOpacity={0.75} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+          <div style={{ flex: "1 1 0", minHeight: 0 }}>
+            <div style={{ fontSize: 9, letterSpacing: 2, color: "#333", marginBottom: 2, fontWeight: 600 }}>CATEGORY BALANCE</div>
+            <div style={{ height: "calc(100% - 14px)" }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <RadarChart data={radarData} cx="50%" cy="50%">
+                  <PolarGrid stroke="rgba(255,255,255,0.05)" />
+                  <PolarAngleAxis dataKey="cat" tick={{ fill: "#555", fontSize: 9, fontFamily: "'DM Sans'" }} />
+                  <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
+                  <Radar dataKey="value" stroke="#ef4444" fill="#ef4444" fillOpacity={0.12} strokeWidth={1.5} dot={{ r: 3, fill: "#ef4444" }} />
+                </RadarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+
+        {/* RIGHT: TABLE + HEAT + STREAKS */}
+        <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 8, minHeight: 0, overflowY: "auto" }}>
+          <div>
+            <div style={{ fontSize: 9, letterSpacing: 2, color: "#333", marginBottom: 4, fontWeight: 600 }}>7-DAY TRACKER</div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9 }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: "left", padding: "2px 3px", color: "#333", fontWeight: 500, borderBottom: "1px solid #1a1a1e", minWidth: 70 }}>Goal</th>
+                    {tableDays.map(d => (
+                      <th key={d.key} style={{ textAlign: "center", padding: "2px 1px", color: d.key === td ? "#ccc" : "#333", fontWeight: d.key === td ? 700 : 400, borderBottom: "1px solid #1a1a1e", fontSize: 8 }}>{d.label}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {goals.map(q => (
+                    <tr key={q.id}>
+                      <td style={{ padding: "2px 3px", color: "#555", fontSize: 8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 80 }}>{q.name}</td>
+                      {tableDays.map(d => {
+                        const active = isActiveOn(q, d.dow);
+                        const done = s.completed?.[d.key]?.[q.id];
+                        return (
+                          <td key={d.key} style={{ textAlign: "center", padding: "1px", lineHeight: 1 }}>
+                            {!active ? <span style={{ color: "#151518" }}>·</span>
+                              : done ? <span style={{ color: CAT_COLORS[q.cat] || "#22c55e", fontSize: 10 }}>✓</span>
+                              : d.key === td ? <span style={{ color: "#2a2a2e" }}>○</span>
+                              : <span style={{ color: "#ef444444", fontSize: 8 }}>✗</span>}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div>
+            <div style={{ fontSize: 9, letterSpacing: 2, color: "#333", marginBottom: 3, fontWeight: 600 }}>ACTIVITY</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(14,1fr)", gap: 2 }}>
+              {heat.map(d => <div key={d.k} style={{ paddingBottom: "100%", borderRadius: 2, background: hc(d.c) }} title={`${d.k}: ${d.c}`} />)}
+            </div>
+          </div>
+
+          <div>
+            <div style={{ fontSize: 9, letterSpacing: 2, color: "#333", marginBottom: 3, fontWeight: 600 }}>BEST STREAKS</div>
+            {topStreaks.length === 0 && <div style={{ color: "#1a1a1e", fontSize: 9 }}>Complete quests to build streaks</div>}
+            {topStreaks.map(q => (
+              <div key={q.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 0" }}>
+                <div style={{ width: 3, height: 12, borderRadius: 2, background: CAT_COLORS[q.cat] || "#555" }} />
+                <span style={{ fontSize: 10, color: "#666", flex: 1 }}>{q.name}</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#f97316", fontFamily: "'DM Mono',monospace" }}>{s.streaks?.[q.id]?.b || 0}d</span>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: "auto", paddingTop: 4 }}>
+            <button onClick={async () => { if (confirm("Reset ALL progress? This cannot be undone.")) { const fresh = { ...INIT, goals }; setS(fresh); await save(fresh); } }}
+              style={{ background: "none", border: "1px solid #1a1a1e", color: "#222", padding: "3px 12px", borderRadius: 4, fontSize: 8, cursor: "pointer" }}>Reset Progress</button>
+          </div>
+        </div>
+      </div>
+
+      {/* LEVEL UP */}
+      {lvUp && (
+        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,.85)", zIndex: 100, animation: "fadeIn .2s" }} onClick={() => setLvUp(null)}>
+          <div style={{ textAlign: "center", animation: "scaleIn .4s cubic-bezier(.34,1.56,.64,1)" }}>
+            <div style={{ fontSize: 44 }}>⚡</div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: "#fff" }}>Level Up</div>
+            <div style={{ fontSize: 52, fontWeight: 800, color: "#fff" }}>{lvUp}</div>
+            <div style={{ fontSize: 12, color: getLevel(lvUp).c, marginTop: 2 }}>{getLevel(lvUp).t}</div>
+          </div>
+        </div>
+      )}
+
+      {/* GOAL EDITOR */}
+      {modal === "goals" && <GoalEditor goals={goals} onSave={saveGoals} onClose={() => setModal(null)} />}
+
+      {/* LEVELS MODAL */}
+      {modal === "levels" && (
+        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,.88)", zIndex: 100 }} onClick={() => setModal(null)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "#141418", border: "1px solid #1e1e22", borderRadius: 12, maxWidth: 500, width: "92%", maxHeight: "80vh", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+            <div style={{ padding: "14px 18px 10px", borderBottom: "1px solid #1a1a1e" }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>🏆 Level Guide</div>
+              <div style={{ fontSize: 9, color: "#444", marginTop: 2 }}>6'0" · 145lb · Bench 155 · Squat 140 · 4.0 GPA</div>
+            </div>
+            <div style={{ overflowY: "auto", padding: "10px 18px 16px", flex: 1 }}>
+              {LEVELS.map((lv, i) => {
+                const cur = (s.level || 1) >= lv.lv && (i === LEVELS.length - 1 || (s.level || 1) < LEVELS[i + 1].lv);
+                return (
+                  <div key={lv.lv} style={{ marginBottom: 8, padding: 9, background: cur ? "rgba(255,255,255,0.03)" : "transparent", border: `1px solid ${cur ? lv.c + "33" : "#1a1a1e"}`, borderRadius: 7, position: "relative" }}>
+                    {cur && <span style={{ position: "absolute", top: 7, right: 9, fontSize: 8, color: lv.c, fontWeight: 600 }}>← You</span>}
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 2 }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: lv.c, fontFamily: "'DM Mono'" }}>Lv {lv.lv}+</span>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#fff" }}>{lv.t}</span>
+                    </div>
+                    <div style={{ fontSize: 9, color: "#555", lineHeight: 1.3 }}>{lv.stats}</div>
+                    <div style={{ fontSize: 8, color: "#333", marginTop: 1 }}>{lv.who}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EMAIL MODAL */}
+      {modal === "email" && (
+        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,.88)", zIndex: 100 }} onClick={() => setModal(null)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "#141418", border: "1px solid #1e1e22", borderRadius: 12, padding: 20, maxWidth: 440, width: "92%" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", marginBottom: 3 }}>📧 Nightly Email</div>
+            <div style={{ fontSize: 10, color: "#444", marginBottom: 12 }}>Free · 2 min · runs forever on Google's servers</div>
+            <div style={{ background: "#0c0c10", border: "1px solid #1a1a1e", borderRadius: 7, padding: 12, fontSize: 10, color: "#777", lineHeight: 1.7, marginBottom: 12, maxHeight: 280, overflowY: "auto" }}>
+              1. Go to <span style={{ color: "#3b82f6" }}>script.google.com</span><br />
+              2. Paste:<br />
+              <div style={{ background: "#08080c", borderRadius: 4, padding: 7, margin: "4px 0", fontSize: 8, fontFamily: "'DM Mono',monospace", color: "#22c55e", whiteSpace: "pre-wrap", overflowX: "auto", lineHeight: 1.4 }}>
+{`function sendReminder() {
+  var goals = ${JSON.stringify(goals.map(g => g.name))};
+  var list = goals.map(function(g) {
+    return "• " + g;
+  }).join("\\n");
+  MailApp.sendEmail({
+    to: "prajval.kesireddy@gmail.com",
+    subject: "⚡ Did you hit your quests today?",
+    body: "Daily Check-in — "
+      + new Date().toLocaleDateString()
+      + "\\n\\n" + list
+      + "\\n\\nDon't break the streak."
+  });
+}`}
+              </div>
+              3. Click <strong style={{ color: "#ccc" }}>Run</strong> → authorize<br />
+              4. Triggers → Add Trigger → sendReminder · Day timer · 9pm<br />
+              5. Done ✓
+              <div style={{ marginTop: 8, padding: "6px 8px", background: "rgba(59,130,246,0.06)", borderRadius: 4, fontSize: 9, color: "#3b82f6" }}>
+                Tip: The email script auto-includes your current goal list. When you add/remove goals, re-paste the updated code.
+              </div>
+            </div>
+            <button onClick={() => setModal(null)} style={{ width: "100%", padding: "7px", background: "#fff", border: "none", borderRadius: 6, color: "#000", fontWeight: 600, fontSize: 11, cursor: "pointer" }}>Got it</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const hdrBtn = { background: "none", border: "1px solid #1a1a1e", borderRadius: 4, padding: "3px 7px", color: "#444", fontSize: 10, cursor: "pointer" };
+
+export default function App() {
+  const [ok, setOk] = useState(false);
+  if (!ok) return <Lock onUnlock={() => setOk(true)} />;
+  return <Main />;
+}
