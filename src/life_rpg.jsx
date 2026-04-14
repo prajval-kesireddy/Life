@@ -298,28 +298,74 @@ function ActivityLog({ state, goals, onClose }) {
   );
 }
 
+// ─── RECOMPUTE STREAKS FROM COMPLETION DATA ───
+function recomputeStreaks(completed, goals) {
+  const streaks = {};
+  for (const goal of goals) {
+    let current = 0, best = 0, i = 0;
+    // Walk backwards from today
+    while (i < 365) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const key = dk(d);
+      if (completed?.[key]?.[goal.id]) {
+        current++;
+        if (current > best) best = current;
+      } else {
+        // If it's today and not done yet, don't break the streak — skip
+        if (i === 0) { i++; continue; }
+        // If this goal wasn't active on this day, skip it
+        if (!isActiveOn(goal, d.getDay())) { i++; continue; }
+        break;
+      }
+      i++;
+    }
+    streaks[goal.id] = { c: current, b: best };
+    // Also scan older history for better best streaks
+    let run = 0;
+    const allDates = Object.keys(completed || {}).sort();
+    for (const date of allDates) {
+      if (completed[date]?.[goal.id]) { run++; if (run > streaks[goal.id].b) streaks[goal.id].b = run; }
+      else {
+        const dd = new Date(date + "T00:00:00");
+        if (isActiveOn(goal, dd.getDay())) run = 0;
+      }
+    }
+  }
+  return streaks;
+}
+
 // ─── MAIN ───
 function Main() {
   const [s, setS] = useState(INIT);
   const [modal, setModal] = useState(null); // "levels" | "email" | "goals" | "log"
   const [lvUp, setLvUp] = useState(null);
   const [syncStatus, setSyncStatus] = useState(supabase ? "syncing" : "local");
-  const td = today();
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const td = dk(selectedDate);
+  const isToday = td === today();
+
+  const shiftDate = (days) => {
+    const d = new Date(selectedDate);
+    d.setDate(d.getDate() + days);
+    // Don't allow future dates
+    if (d > new Date()) return;
+    setSelectedDate(d);
+  };
 
   useEffect(() => { (async () => {
     const sv = await sGet();
     if (sv) {
       if (!sv.goals) sv.goals = DEFAULT_GOALS;
-      if (sv.lastDay !== td) sv.combo = 0;
+      if (sv.lastDay !== today()) sv.combo = 0;
       setS(sv);
     }
     setSyncStatus(supabase ? "synced" : "local");
   })(); }, []);
 
-  const save = async (ns) => { await sSet({ ...ns, lastDay: td }); };
+  const save = async (ns) => { await sSet({ ...ns, lastDay: today() }); };
   const isDone = (id) => s.completed?.[td]?.[id] || false;
   const goals = s.goals || DEFAULT_GOALS;
-  const todayGoals = useMemo(() => goalsForDay(goals, new Date()), [goals, td]);
+  const selectedGoals = useMemo(() => goalsForDay(goals, selectedDate), [goals, td]);
 
   // ─── TOGGLE ───
   const toggle = useCallback((id) => {
@@ -328,37 +374,23 @@ function Main() {
     const ns = JSON.parse(JSON.stringify(s));
     if (!ns.completed) ns.completed = {};
     if (!ns.completed[td]) ns.completed[td] = {};
-    if (!ns.streaks) ns.streaks = {};
 
     if (ns.completed[td][id]) {
       delete ns.completed[td][id];
       ns.totalXP = Math.max(0, (ns.totalXP || 0) - goal.xp);
-      ns.combo = Math.max(0, (ns.combo || 0) - 1);
-      if (ns.streaks[id]) ns.streaks[id].c = Math.max(0, (ns.streaks[id].c || 0) - 1);
       if (ns.heatmap?.[td]) ns.heatmap[td] = Math.max(0, ns.heatmap[td] - 1);
     } else {
       ns.completed[td][id] = true;
-      const combo = (ns.combo || 0) + 1;
-      ns.totalXP = (ns.totalXP || 0) + Math.round(goal.xp * Math.min(1 + combo * 0.1, 2.5));
-      ns.combo = combo;
-      if (!ns.streaks[id]) ns.streaks[id] = { c: 0, b: 0 };
-
-      const yest = new Date(); yest.setDate(yest.getDate() - 1);
-      const yk = dk(yest);
-      const wasYesterday = ns.completed[yk]?.[id];
-      if (wasYesterday || ns.streaks[id].c === 0) {
-        ns.streaks[id].c += 1;
-      } else {
-        ns.streaks[id].c = 1;
-      }
-      if (ns.streaks[id].c > ns.streaks[id].b) ns.streaks[id].b = ns.streaks[id].c;
-
+      ns.totalXP = (ns.totalXP || 0) + goal.xp;
       if (!ns.heatmap) ns.heatmap = {};
       ns.heatmap[td] = (ns.heatmap[td] || 0) + 1;
 
       const nl = Math.floor(ns.totalXP / XP_LV) + 1;
       if (nl > (ns.level || 1)) { setLvUp(nl); setTimeout(() => setLvUp(null), 2200); }
     }
+
+    // Recompute all streaks from actual data
+    ns.streaks = recomputeStreaks(ns.completed, goals);
     ns.level = Math.floor((ns.totalXP || 0) / XP_LV) + 1;
     setS(ns); save(ns);
   }, [s, td, goals]);
@@ -370,13 +402,13 @@ function Main() {
   };
 
   // ─── COMPUTED ───
-  const doneCount = todayGoals.filter(q => isDone(q.id)).length;
-  const totalToday = todayGoals.length;
+  const doneCount = selectedGoals.filter(q => isDone(q.id)).length;
+  const totalToday = selectedGoals.length;
   const pct = totalToday > 0 ? Math.round((doneCount / totalToday) * 100) : 0;
   const xpIn = (s.totalXP || 0) % XP_LV;
   const lv = getLevel(s.level || 1);
-  const dayName = new Date().toLocaleDateString("en-US", { weekday: "long" });
-  const dateStr = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const selDayName = selectedDate.toLocaleDateString("en-US", { weekday: "long" });
+  const selDateStr = selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
   // ─── ACCURACY CHART ───
   const accData = useMemo(() => {
@@ -395,12 +427,12 @@ function Main() {
 
   // ─── RADAR ───
   const radarData = useMemo(() => {
-    return CATS_ORDER.filter(cat => todayGoals.some(g => g.cat === cat)).map(cat => {
-      const catGoals = todayGoals.filter(g => g.cat === cat);
+    return CATS_ORDER.filter(cat => selectedGoals.some(g => g.cat === cat)).map(cat => {
+      const catGoals = selectedGoals.filter(g => g.cat === cat);
       const done = catGoals.filter(g => isDone(g.id)).length;
       return { cat, value: catGoals.length > 0 ? Math.round((done / catGoals.length) * 100) : 0 };
     });
-  }, [s, td, todayGoals]);
+  }, [s, td, selectedGoals]);
 
   // ─── 7-DAY TABLE ───
   const tableDays = useMemo(() => {
@@ -471,9 +503,9 @@ function Main() {
   // ─── GROUPED ───
   const grouped = useMemo(() => {
     const g = {};
-    for (const q of todayGoals) { if (!g[q.cat]) g[q.cat] = []; g[q.cat].push(q); }
+    for (const q of selectedGoals) { if (!g[q.cat]) g[q.cat] = []; g[q.cat].push(q); }
     return g;
-  }, [todayGoals]);
+  }, [selectedGoals]);
 
   // ─── HEATMAP TOOLTIP ───
   const [heatTip, setHeatTip] = useState(null);
@@ -501,7 +533,11 @@ function Main() {
           <div onClick={() => setModal("levels")} style={{ padding: "2px 9px", background: "rgba(255,255,255,0.03)", borderRadius: 4, fontSize: 10, color: lv.c, cursor: "pointer", fontWeight: 600 }}>
             Lv {s.level || 1} · {lv.t}
           </div>
-          <span style={{ fontSize: 11, color: "#333" }}>{dayName}, {dateStr}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button onClick={() => shiftDate(-1)} style={{ background: "none", border: "1px solid #222", borderRadius: 4, padding: "2px 6px", color: "#888", fontSize: 10, cursor: "pointer", lineHeight: 1 }}>←</button>
+            <span style={{ fontSize: 11, color: isToday ? "#333" : "#f59e0b", fontWeight: isToday ? 400 : 600, cursor: "pointer" }} onClick={() => setSelectedDate(new Date())}>{selDayName}, {selDateStr}{!isToday && " *"}</span>
+            <button onClick={() => shiftDate(1)} disabled={isToday} style={{ background: "none", border: "1px solid #222", borderRadius: 4, padding: "2px 6px", color: isToday ? "#1a1a1e" : "#888", fontSize: 10, cursor: "pointer", lineHeight: 1 }}>→</button>
+          </div>
           {syncStatus === "synced" && <span style={{ fontSize: 8, color: "#166534" }}>☁️</span>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -523,7 +559,7 @@ function Main() {
 
         {/* LEFT: CHECKLIST */}
         <div style={{ borderRight: "1px solid rgba(255,255,255,0.04)", padding: "10px 12px", overflowY: "auto" }}>
-          <div style={{ fontSize: 9, letterSpacing: 2, color: "#333", marginBottom: 8, fontWeight: 600 }}>TODAY'S QUESTS</div>
+          <div style={{ fontSize: 9, letterSpacing: 2, color: isToday ? "#333" : "#f59e0b", marginBottom: 8, fontWeight: 600 }}>{isToday ? "TODAY'S QUESTS" : `QUESTS — ${selDateStr.toUpperCase()}`}</div>
           {CATS_ORDER.filter(c => grouped[c]).map(cat => (
             <div key={cat} style={{ marginBottom: 8 }}>
               <div style={{ fontSize: 8, letterSpacing: 2, color: CAT_COLORS[cat], marginBottom: 3, fontWeight: 600, opacity: 0.7 }}>{cat.toUpperCase()}</div>
