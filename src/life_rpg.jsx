@@ -1,8 +1,14 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import * as recharts from "recharts";
+import { createClient } from "@supabase/supabase-js";
 const { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis } = recharts;
 
 const APP_PW = (typeof import.meta !== "undefined" && import.meta.env?.VITE_APP_PASSWORD) || "lockintwin";
+
+// ─── SUPABASE ───
+const SB_URL = (typeof import.meta !== "undefined" && import.meta.env?.VITE_SUPABASE_URL) || "";
+const SB_KEY = (typeof import.meta !== "undefined" && import.meta.env?.VITE_SUPABASE_ANON_KEY) || "";
+const supabase = SB_URL && SB_KEY ? createClient(SB_URL, SB_KEY) : null;
 
 // ─── DEFAULT GOALS ───
 const DEFAULT_GOALS = [
@@ -30,6 +36,7 @@ const CAT_COLORS = { Body: "#ef4444", Face: "#f59e0b", Mind: "#3b82f6", Discipli
 const CATS_ORDER = ["Body", "Face", "Mind", "Discipline", "Career"];
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const DAY_SHORT = ["S", "M", "T", "W", "T", "F", "S"];
+const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const LEVELS = [
   { lv: 1, t: "NPC", c: "#555", stats: "Bench 135 · Squat 135 · Skinny fat", who: "95% of people who 'start Monday'" },
@@ -48,10 +55,41 @@ const dk = (d) => (d || new Date()).toISOString().slice(0, 10);
 const today = () => dk();
 const uid = () => "g" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
 
-const sGet = async (k) => { try { if (window.storage?.get) { const r = await window.storage.get(k); return r?.value ? JSON.parse(r.value) : null; } return JSON.parse(localStorage.getItem(k)); } catch { return null; } };
-const sSet = async (k, v) => { try { const s = JSON.stringify(v); if (window.storage?.set) await window.storage.set(k, s); else localStorage.setItem(k, s); } catch {} };
-
+// ─── STORAGE: localStorage + Supabase cloud sync ───
 const SK = "lrpg6";
+
+async function cloudGet() {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase.from("app_state").select("data").eq("id", "main").single();
+    if (error || !data) return null;
+    return data.data;
+  } catch { return null; }
+}
+
+async function cloudSet(v) {
+  if (!supabase) return;
+  try {
+    await supabase.from("app_state").upsert({ id: "main", data: v, updated_at: new Date().toISOString() });
+  } catch {}
+}
+
+async function sGet() {
+  // Try cloud first, fall back to localStorage
+  const cloud = await cloudGet();
+  if (cloud) {
+    // Also update localStorage as cache
+    try { localStorage.setItem(SK, JSON.stringify(cloud)); } catch {}
+    return cloud;
+  }
+  try { return JSON.parse(localStorage.getItem(SK)); } catch { return null; }
+}
+
+async function sSet(v) {
+  try { localStorage.setItem(SK, JSON.stringify(v)); } catch {}
+  cloudSet(v); // fire and forget
+}
+
 const INIT = { completed: {}, streaks: {}, totalXP: 0, level: 1, heatmap: {}, goals: DEFAULT_GOALS };
 
 function isActiveOn(goal, dow) {
@@ -79,6 +117,7 @@ function Lock({ onUnlock }) {
           style={{ width: 200, padding: "9px 14px", background: "rgba(255,255,255,0.04)", border: `1px solid ${err ? "#ef4444" : "#222"}`, borderRadius: 8, color: "#fff", fontSize: 13, fontFamily: "'DM Mono',monospace", textAlign: "center", letterSpacing: 2 }} />
         <div style={{ marginTop: 10 }}><button onClick={go} style={{ padding: "7px 32px", background: "#fff", border: "none", borderRadius: 7, color: "#000", fontWeight: 600, fontSize: 11, cursor: "pointer" }}>Enter</button></div>
         {err && <div style={{ color: "#ef4444", fontSize: 10, marginTop: 6 }}>wrong password</div>}
+        {supabase && <div style={{ fontSize: 8, color: "#1a3a1a", marginTop: 16 }}>☁️ cloud sync active</div>}
       </div>
     </div>
   );
@@ -178,23 +217,106 @@ function GoalEditor({ goals, onSave, onClose }) {
   );
 }
 
+// ─── ACTIVITY LOG MODAL ───
+function ActivityLog({ state, goals, onClose }) {
+  const [page, setPage] = useState(0);
+  const DAYS_PER_PAGE = 14;
+
+  const logDays = useMemo(() => {
+    const days = [];
+    // Go back up to 365 days
+    for (let i = 0; i < 365; i++) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const key = dk(d);
+      const dayGoals = goalsForDay(goals, d);
+      const completed = dayGoals.filter(g => state.completed?.[key]?.[g.id]);
+      if (completed.length > 0 || i < 7) {
+        days.push({ key, date: d, dayGoals, completed, total: dayGoals.length });
+      }
+    }
+    return days;
+  }, [state, goals]);
+
+  const pageDays = logDays.slice(page * DAYS_PER_PAGE, (page + 1) * DAYS_PER_PAGE);
+  const totalPages = Math.ceil(logDays.length / DAYS_PER_PAGE);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,.88)", zIndex: 200 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#141418", border: "1px solid #222", borderRadius: 12, maxWidth: 520, width: "92%", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ padding: "16px 20px 12px", borderBottom: "1px solid #1a1a1e", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>📋 Activity Log</div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0}
+              style={{ background: "none", border: "1px solid #222", borderRadius: 4, padding: "3px 8px", color: page === 0 ? "#222" : "#888", fontSize: 10, cursor: "pointer" }}>←</button>
+            <span style={{ fontSize: 9, color: "#444", fontFamily: "'DM Mono',monospace" }}>{page + 1}/{totalPages || 1}</span>
+            <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1}
+              style={{ background: "none", border: "1px solid #222", borderRadius: 4, padding: "3px 8px", color: page >= totalPages - 1 ? "#222" : "#888", fontSize: 10, cursor: "pointer" }}>→</button>
+          </div>
+        </div>
+
+        <div style={{ overflowY: "auto", padding: "8px 20px 16px", flex: 1 }}>
+          {pageDays.map(day => {
+            const pct = day.total > 0 ? Math.round((day.completed.length / day.total) * 100) : 0;
+            const dateLabel = day.key === today() ? "Today" : `${DAY_NAMES[day.date.getDay()]}, ${MONTH_SHORT[day.date.getMonth()]} ${day.date.getDate()}`;
+            return (
+              <div key={day.key} style={{ marginBottom: 10, padding: "8px 10px", background: "rgba(255,255,255,0.015)", borderRadius: 7, border: "1px solid #1a1a1e" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: "#ccc" }}>{dateLabel}</span>
+                    <span style={{ fontSize: 9, color: "#333", fontFamily: "'DM Mono',monospace" }}>{day.key}</span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, fontFamily: "'DM Mono',monospace", color: pct === 100 ? "#22c55e" : pct >= 50 ? "#f59e0b" : "#ef4444" }}>{pct}%</span>
+                    <span style={{ fontSize: 9, color: "#444", fontFamily: "'DM Mono',monospace" }}>{day.completed.length}/{day.total}</span>
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+                  {day.dayGoals.map(g => {
+                    const done = day.completed.some(c => c.id === g.id);
+                    return (
+                      <span key={g.id} style={{
+                        fontSize: 8, padding: "2px 6px", borderRadius: 3,
+                        background: done ? CAT_COLORS[g.cat] + "22" : "rgba(255,255,255,0.02)",
+                        color: done ? CAT_COLORS[g.cat] : "#2a2a2e",
+                        border: `1px solid ${done ? CAT_COLORS[g.cat] + "44" : "#1a1a1e"}`,
+                        textDecoration: done ? "none" : "line-through",
+                      }}>{g.name}</span>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+          {pageDays.length === 0 && <div style={{ color: "#333", fontSize: 11, padding: 20, textAlign: "center" }}>No activity yet</div>}
+        </div>
+
+        <div style={{ padding: "12px 20px", borderTop: "1px solid #1a1a1e", display: "flex", justifyContent: "flex-end" }}>
+          <button onClick={onClose} style={{ padding: "7px 20px", background: "#fff", border: "none", borderRadius: 6, color: "#000", fontWeight: 600, fontSize: 11, cursor: "pointer" }}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── MAIN ───
 function Main() {
   const [s, setS] = useState(INIT);
-  const [modal, setModal] = useState(null); // "levels" | "email" | "goals"
+  const [modal, setModal] = useState(null); // "levels" | "email" | "goals" | "log"
   const [lvUp, setLvUp] = useState(null);
+  const [syncStatus, setSyncStatus] = useState(supabase ? "syncing" : "local");
   const td = today();
 
   useEffect(() => { (async () => {
-    const sv = await sGet(SK);
+    const sv = await sGet();
     if (sv) {
       if (!sv.goals) sv.goals = DEFAULT_GOALS;
       if (sv.lastDay !== td) sv.combo = 0;
       setS(sv);
     }
+    setSyncStatus(supabase ? "synced" : "local");
   })(); }, []);
 
-  const save = async (ns) => { await sSet(SK, { ...ns, lastDay: td }); };
+  const save = async (ns) => { await sSet({ ...ns, lastDay: td }); };
   const isDone = (id) => s.completed?.[td]?.[id] || false;
   const goals = s.goals || DEFAULT_GOALS;
   const todayGoals = useMemo(() => goalsForDay(goals, new Date()), [goals, td]);
@@ -221,14 +343,13 @@ function Main() {
       ns.combo = combo;
       if (!ns.streaks[id]) ns.streaks[id] = { c: 0, b: 0 };
 
-      // Proper streak logic: check if yesterday was also completed
       const yest = new Date(); yest.setDate(yest.getDate() - 1);
       const yk = dk(yest);
       const wasYesterday = ns.completed[yk]?.[id];
       if (wasYesterday || ns.streaks[id].c === 0) {
         ns.streaks[id].c += 1;
       } else {
-        ns.streaks[id].c = 1; // reset streak
+        ns.streaks[id].c = 1;
       }
       if (ns.streaks[id].c > ns.streaks[id].b) ns.streaks[id].b = ns.streaks[id].c;
 
@@ -288,13 +409,59 @@ function Main() {
     return days;
   }, [td]);
 
-  // ─── HEATMAP ───
+  // ─── HEATMAP (GitHub-style, 120 days) ───
   const heat = useMemo(() => {
     const h = [];
-    for (let i = 55; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); h.push({ k: dk(d), c: s.heatmap?.[dk(d)] || 0 }); }
+    for (let i = 119; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const key = dk(d);
+      const dayGoals = goalsForDay(goals, d);
+      const done = dayGoals.filter(g => s.completed?.[key]?.[g.id]).length;
+      const total = dayGoals.length;
+      const pct = total > 0 ? done / total : 0;
+      h.push({ k: key, c: done, pct, d, dow: d.getDay() });
+    }
     return h;
-  }, [s]);
-  const hc = (n) => n === 0 ? "rgba(255,255,255,0.025)" : n <= 2 ? "#14401a" : n <= 5 ? "#1a6b26" : n <= 10 ? "#22a835" : "#22ff44";
+  }, [s, goals]);
+
+  const heatColor = (pct, count) => {
+    if (count === 0) return "rgba(255,255,255,0.03)";
+    if (pct >= 0.9) return "#22c55e";
+    if (pct >= 0.7) return "#16a34a";
+    if (pct >= 0.5) return "#15803d";
+    if (pct >= 0.25) return "#166534";
+    return "#14532d";
+  };
+
+  // ─── HEATMAP WEEKS (columns = weeks, rows = days of week) ───
+  const heatWeeks = useMemo(() => {
+    const weeks = [];
+    let currentWeek = [];
+    for (const d of heat) {
+      if (d.dow === 0 && currentWeek.length > 0) {
+        weeks.push(currentWeek);
+        currentWeek = [];
+      }
+      currentWeek.push(d);
+    }
+    if (currentWeek.length > 0) weeks.push(currentWeek);
+    return weeks;
+  }, [heat]);
+
+  // ─── MONTH LABELS for heatmap ───
+  const heatMonths = useMemo(() => {
+    const labels = [];
+    let lastMonth = -1;
+    heatWeeks.forEach((week, wi) => {
+      const firstDay = week[0];
+      const m = firstDay.d.getMonth();
+      if (m !== lastMonth) {
+        labels.push({ label: MONTH_SHORT[m], col: wi });
+        lastMonth = m;
+      }
+    });
+    return labels;
+  }, [heatWeeks]);
 
   // ─── STREAKS ───
   const topStreaks = useMemo(() => {
@@ -308,6 +475,9 @@ function Main() {
     return g;
   }, [todayGoals]);
 
+  // ─── HEATMAP TOOLTIP ───
+  const [heatTip, setHeatTip] = useState(null);
+
   return (
     <div style={{ fontFamily: "'DM Sans',sans-serif", background: "#0c0c10", color: "#d4d4d4", height: "100vh", overflow: "hidden", display: "grid", gridTemplateRows: "auto 1fr" }}>
       <style>{`
@@ -318,6 +488,8 @@ function Main() {
 @keyframes slideUp{from{transform:translateY(4px);opacity:0}to{transform:translateY(0);opacity:1}}
 .qr{transition:background .1s;cursor:pointer;border-radius:5px;padding:4px 6px;margin-bottom:1px;display:flex;align-items:center;gap:7px}
 .qr:hover{background:rgba(255,255,255,0.03)}
+.heat-dot{transition:transform .1s}
+.heat-dot:hover{transform:scale(1.8);z-index:10}
 ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#222;border-radius:3px}::-webkit-scrollbar-track{background:transparent}
 .recharts-text{fill:#444!important;font-family:'DM Mono',monospace!important;font-size:9px!important}
       `}</style>
@@ -330,6 +502,7 @@ function Main() {
             Lv {s.level || 1} · {lv.t}
           </div>
           <span style={{ fontSize: 11, color: "#333" }}>{dayName}, {dateStr}</span>
+          {syncStatus === "synced" && <span style={{ fontSize: 8, color: "#166534" }}>☁️</span>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ fontSize: 11, fontWeight: 600, color: "#f59e0b", fontFamily: "'DM Mono',monospace" }}>{s.totalXP || 0} xp</span>
@@ -340,6 +513,7 @@ function Main() {
           <span style={{ fontSize: 10, color: "#333", fontFamily: "'DM Mono',monospace" }}>{doneCount}/{totalToday}</span>
           <button onClick={() => setModal("goals")} style={hdrBtn} title="Manage goals">⚙️</button>
           <button onClick={() => setModal("levels")} style={hdrBtn} title="Levels">🏆</button>
+          <button onClick={() => setModal("log")} style={hdrBtn} title="Activity log">📋</button>
           <button onClick={() => setModal("email")} style={hdrBtn} title="Email setup">📧</button>
         </div>
       </div>
@@ -440,10 +614,70 @@ function Main() {
             </div>
           </div>
 
+          {/* GITHUB-STYLE HEATMAP */}
           <div>
-            <div style={{ fontSize: 9, letterSpacing: 2, color: "#333", marginBottom: 3, fontWeight: 600 }}>ACTIVITY</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(14,1fr)", gap: 2 }}>
-              {heat.map(d => <div key={d.k} style={{ paddingBottom: "100%", borderRadius: 2, background: hc(d.c) }} title={`${d.k}: ${d.c}`} />)}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
+              <div style={{ fontSize: 9, letterSpacing: 2, color: "#333", fontWeight: 600 }}>ACTIVITY — 120 DAYS</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                <span style={{ fontSize: 7, color: "#333" }}>Less</span>
+                {[0, 0.25, 0.5, 0.7, 0.9].map((p, i) => (
+                  <div key={i} style={{ width: 8, height: 8, borderRadius: "50%", background: heatColor(p, p === 0 ? 0 : 1) }} />
+                ))}
+                <span style={{ fontSize: 7, color: "#333" }}>More</span>
+              </div>
+            </div>
+            {/* Month labels */}
+            <div style={{ display: "flex", gap: 2, marginBottom: 2, paddingLeft: 14 }}>
+              {heatMonths.map((m, i) => (
+                <div key={i} style={{ position: "relative", left: m.col * 10 - (i > 0 ? heatMonths[i-1].col * 10 + (heatMonths[i-1].label.length * 5) : 0) }}>
+                  <span style={{ fontSize: 7, color: "#444", fontFamily: "'DM Mono',monospace" }}>{m.label}</span>
+                </div>
+              ))}
+            </div>
+            {/* Grid: rows = days of week (Mon/Wed/Fri labels), cols = weeks */}
+            <div style={{ display: "flex", gap: 0 }}>
+              {/* Day labels */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, marginRight: 3, justifyContent: "flex-start" }}>
+                {["S","M","T","W","T","F","S"].map((d, i) => (
+                  <div key={i} style={{ height: 8, display: "flex", alignItems: "center" }}>
+                    {i % 2 === 1 ? <span style={{ fontSize: 6, color: "#333", fontFamily: "'DM Mono',monospace", width: 8 }}>{d}</span> : <span style={{ width: 8 }} />}
+                  </div>
+                ))}
+              </div>
+              {/* Dots grid */}
+              <div style={{ display: "flex", gap: 2, position: "relative" }}>
+                {heatWeeks.map((week, wi) => (
+                  <div key={wi} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    {/* Pad first week if it doesn't start on Sunday */}
+                    {wi === 0 && Array.from({ length: week[0].dow }).map((_, pi) => (
+                      <div key={`pad-${pi}`} style={{ width: 8, height: 8 }} />
+                    ))}
+                    {week.map(d => (
+                      <div key={d.k} className="heat-dot"
+                        onMouseEnter={() => setHeatTip(d)}
+                        onMouseLeave={() => setHeatTip(null)}
+                        style={{
+                          width: 8, height: 8, borderRadius: "50%",
+                          background: heatColor(d.pct, d.c),
+                          cursor: "pointer", position: "relative",
+                        }}
+                      />
+                    ))}
+                  </div>
+                ))}
+                {/* Tooltip */}
+                {heatTip && (
+                  <div style={{
+                    position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+                    background: "#1a1a1e", border: "1px solid #333", borderRadius: 6,
+                    padding: "6px 10px", fontSize: 9, color: "#ccc", zIndex: 50,
+                    pointerEvents: "none", whiteSpace: "nowrap",
+                  }}>
+                    <div style={{ fontWeight: 600, marginBottom: 2 }}>{DAY_NAMES[heatTip.dow]}, {MONTH_SHORT[heatTip.d.getMonth()]} {heatTip.d.getDate()}</div>
+                    <div>{heatTip.c} quests · {Math.round(heatTip.pct * 100)}%</div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -480,6 +714,9 @@ function Main() {
 
       {/* GOAL EDITOR */}
       {modal === "goals" && <GoalEditor goals={goals} onSave={saveGoals} onClose={() => setModal(null)} />}
+
+      {/* ACTIVITY LOG */}
+      {modal === "log" && <ActivityLog state={s} goals={goals} onClose={() => setModal(null)} />}
 
       {/* LEVELS MODAL */}
       {modal === "levels" && (
