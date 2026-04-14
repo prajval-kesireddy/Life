@@ -111,8 +111,7 @@ function Lock({ onUnlock }) {
       <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');*{box-sizing:border-box;margin:0;padding:0}input:focus{outline:none}`}</style>
       <div style={{ textAlign: "center" }}>
         <div style={{ fontSize: 28, marginBottom: 14 }}>⚡</div>
-        <div style={{ fontSize: 10, letterSpacing: 5, color: "#333", marginBottom: 4 }}>LIFE RPG</div>
-        <div style={{ fontSize: 20, fontWeight: 700, color: "#fff", marginBottom: 24 }}>Praj Kesireddy</div>
+        <div style={{ fontSize: 10, letterSpacing: 5, color: "#333", marginBottom: 24 }}>LIFE RPG</div>
         <input type="password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === "Enter" && go()} placeholder="password" autoFocus
           style={{ width: 200, padding: "9px 14px", background: "rgba(255,255,255,0.04)", border: `1px solid ${err ? "#ef4444" : "#222"}`, borderRadius: 8, color: "#fff", fontSize: 13, fontFamily: "'DM Mono',monospace", textAlign: "center", letterSpacing: 2 }} />
         <div style={{ marginTop: 10 }}><button onClick={go} style={{ padding: "7px 32px", background: "#fff", border: "none", borderRadius: 7, color: "#000", fontWeight: 600, fontSize: 11, cursor: "pointer" }}>Enter</button></div>
@@ -294,6 +293,53 @@ function ActivityLog({ state, goals, onClose }) {
           <button onClick={onClose} style={{ padding: "7px 20px", background: "#fff", border: "none", borderRadius: 6, color: "#000", fontWeight: 600, fontSize: 11, cursor: "pointer" }}>Close</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── YEARLY TRACKER (by month) ───
+function YearlyTracker({ state, goals }) {
+  const months = useMemo(() => {
+    const result = [];
+    const now = new Date();
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const year = d.getFullYear();
+      const month = d.getMonth();
+      const daysInMonth = new Date(year, month + 1, 0).getDate();
+      let totalDone = 0, totalPossible = 0;
+      for (let day = 1; day <= daysInMonth; day++) {
+        const date = new Date(year, month, day);
+        if (date > now) break;
+        const key = dk(date);
+        const dayGoals = goalsForDay(goals, date);
+        totalPossible += dayGoals.length;
+        totalDone += dayGoals.filter(g => state.completed?.[key]?.[g.id]).length;
+      }
+      const pct = totalPossible > 0 ? Math.round((totalDone / totalPossible) * 100) : 0;
+      result.push({ label: MONTH_SHORT[month], pct, done: totalDone, total: totalPossible, year });
+    }
+    return result;
+  }, [state, goals]);
+
+  const barColor = (pct) => {
+    if (pct >= 80) return "#22c55e";
+    if (pct >= 60) return "#16a34a";
+    if (pct >= 40) return "#f59e0b";
+    if (pct >= 20) return "#f97316";
+    return "#ef4444";
+  };
+
+  return (
+    <div style={{ display: "flex", gap: 3, alignItems: "flex-end", height: 48 }}>
+      {months.map((m, i) => (
+        <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+          <div style={{ width: "100%", background: "#1a1a1e", borderRadius: 2, position: "relative", height: 32, display: "flex", alignItems: "flex-end" }} title={`${m.label} ${m.year}: ${m.pct}% (${m.done}/${m.total})`}>
+            <div style={{ width: "100%", height: `${Math.max(m.pct > 0 ? 8 : 0, m.pct)}%`, background: barColor(m.pct), borderRadius: 2, transition: "height .3s" }} />
+          </div>
+          <span style={{ fontSize: 6, color: "#444", fontFamily: "'DM Mono',monospace" }}>{m.label}</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -729,9 +775,10 @@ function Main() {
             ))}
           </div>
 
-          <div style={{ marginTop: "auto", paddingTop: 4 }}>
-            <button onClick={async () => { if (confirm("Reset ALL progress? This cannot be undone.")) { const fresh = { ...INIT, goals }; setS(fresh); await save(fresh); } }}
-              style={{ background: "none", border: "1px solid #1a1a1e", color: "#222", padding: "3px 12px", borderRadius: 4, fontSize: 8, cursor: "pointer" }}>Reset Progress</button>
+          {/* YEARLY TRACKER */}
+          <div>
+            <div style={{ fontSize: 9, letterSpacing: 2, color: "#333", marginBottom: 4, fontWeight: 600 }}>YEARLY TRACKER</div>
+            <YearlyTracker state={s} goals={goals} />
           </div>
         </div>
       </div>
